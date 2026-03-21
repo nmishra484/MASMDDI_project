@@ -92,7 +92,6 @@ def compute_batch(batch, model, device):
 def train(model, optimizer, loss_fn, scheduler):
 
     best_val_auc = 0
-
     print("\nStarting training at:", datetime.now())
 
     for epoch in range(1, args.n_epochs + 1):
@@ -114,10 +113,9 @@ def train(model, optimizer, loss_fn, scheduler):
 
             total_loss += loss.item()
 
-        # Average training loss
         train_loss = total_loss / len(train_loader)
 
-        # ================= TRAIN METRICS (EVAL MODE) =================
+        # ================= TRAIN EVAL =================
         model.eval()
         train_pred, train_gt = [], []
 
@@ -152,12 +150,11 @@ def train(model, optimizer, loss_fn, scheduler):
 
         val_acc, val_auc, val_auprc, val_f1 = compute_metrics(val_pred, val_gt)
 
-        # Save best model
+        # ================= SAVE BEST =================
         if val_auc > best_val_auc:
             best_val_auc = val_auc
             torch.save(model.state_dict(), "best_model.pth")
 
-        # Step scheduler AFTER optimizer updates
         scheduler.step()
 
         # ================= PRINT =================
@@ -216,7 +213,5 @@ scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda e: 0.96 ** e)
 
 train(model, optimizer, loss_fn, scheduler)
 
-# Load best model
 model.load_state_dict(torch.load("best_model.pth"))
 test(model)
-
