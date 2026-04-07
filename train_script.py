@@ -1,6 +1,7 @@
 from datetime import datetime
 import time
 import argparse
+import random
 
 import torch
 from torch import optim
@@ -19,43 +20,74 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--n_atom_feats', type=int, default=TOTAL_ATOM_FEATS)
 parser.add_argument('--n_atom_hid', type=int, default=256)
 parser.add_argument('--rel_total', type=int, default=86)
-parser.add_argument('--lr', type=float, default=0.0005)
+parser.add_argument('--lr', type=float, default=0.0002)
 parser.add_argument('--n_epochs', type=int, default=100)
 parser.add_argument('--batch_size', type=int, default=128)
 parser.add_argument('--num_layers', type=int, default=4)
 
 parser.add_argument('--weight_decay', type=float, default=5e-4)
 parser.add_argument('--neg_samples', type=int, default=1)
-parser.add_argument('--data_size_ratio', type=int, default=1)
 parser.add_argument('--use_cuda', type=bool, default=True)
 
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() and args.use_cuda else 'cpu'
 print("Using device:", device)
-print(args)
 
 
-# ===================== DATA =====================
-df_train = pd.read_csv('data/ddi_training.csv')
-df_val   = pd.read_csv('data/ddi_validation.csv')
-df_test  = pd.read_csv('data/ddi_test.csv')
+# ===================== S2 SPLIT FUNCTION =====================
+def create_two_sides_split(triples, test_ratio=0.2, seed=42):
+    random.seed(seed)
 
-train_tup = list(zip(df_train['d1'], df_train['d2'], df_train['type']))
-val_tup   = list(zip(df_val['d1'], df_val['d2'], df_val['type']))
-test_tup  = list(zip(df_test['d1'], df_test['d2'], df_test['type']))
+    drugs = list(set([h for h, _, _ in triples] + [t for _, t, _ in triples]))
+    random.shuffle(drugs)
 
-train_data = DrugDataset(train_tup, ratio=args.data_size_ratio, neg_ent=args.neg_samples)
-val_data   = DrugDataset(val_tup, ratio=args.data_size_ratio, disjoint_split=False)
+    split_idx = int(len(drugs) * (1 - test_ratio))
+
+    train_drugs = set(drugs[:split_idx])
+    test_drugs = set(drugs[split_idx:])
+
+    train_data, test_data = [], []
+
+    for h, t, r in triples:
+        if h in train_drugs and t in train_drugs:
+            train_data.append((h, t, r))
+        elif h in test_drugs and t in test_drugs:
+            test_data.append((h, t, r))
+
+    return train_data, test_data
+
+
+# ===================== LOAD DATA =====================
+df_all = pd.read_csv('data/ddis.csv')
+
+all_triples = list(zip(df_all['d1'], df_all['d2'], df_all['type']))
+
+train_tup, test_tup = create_two_sides_split(all_triples)
+
+# Split test → val + test
+split = len(test_tup) // 2
+val_tup = test_tup[:split]
+test_tup = test_tup[split:]
+
+
+# ===================== CHECK SPLIT =====================
+train_drugs = set([h for h,_,_ in train_tup] + [t for _,t,_ in train_tup])
+test_drugs = set([h for h,_,_ in test_tup] + [t for _,t,_ in test_tup])
+
+print("Train drugs:", len(train_drugs))
+print("Test drugs:", len(test_drugs))
+print("Overlap:", len(train_drugs & test_drugs))  # MUST BE 0
+
+
+# ===================== DATASET =====================
+train_data = DrugDataset(train_tup, neg_ent=args.neg_samples)
+val_data   = DrugDataset(val_tup, disjoint_split=False)
 test_data  = DrugDataset(test_tup, disjoint_split=False)
 
-print(f"Training with {len(train_data)} samples")
-print(f"Validating with {len(val_data)} samples")
-print(f"Testing with {len(test_data)} samples")
-
 train_loader = DrugDataLoader(train_data, batch_size=args.batch_size, shuffle=True)
-val_loader   = DrugDataLoader(val_data, batch_size=args.batch_size * 3)
-test_loader  = DrugDataLoader(test_data, batch_size=args.batch_size * 3)
+val_loader   = DrugDataLoader(val_data, batch_size=args.batch_size * 2)
+test_loader  = DrugDataLoader(test_data, batch_size=args.batch_size * 2)
 
 
 # ===================== METRICS =====================
@@ -70,7 +102,7 @@ def compute_metrics(pred, gt):
     return acc, auc, auprc, f1
 
 
-def compute_batch(batch, model, device):
+def compute_batch(batch):
     pos, neg = batch
 
     pos = [x.to(device) for x in pos]
@@ -88,21 +120,21 @@ def compute_batch(batch, model, device):
     return p_score, n_score, probas, labels
 
 
-# ===================== TRAIN FUNCTION =====================
-def train(model, optimizer, loss_fn, scheduler):
-
+# ===================== TRAIN =====================
+def train():
     best_val_auc = 0
-    print("\nStarting training at:", datetime.now())
+
+    print("\nTraining started:", datetime.now())
 
     for epoch in range(1, args.n_epochs + 1):
         start = time.time()
 
-        # ================= TRAIN =================
+        # ---- TRAIN ----
         model.train()
         total_loss = 0
 
         for batch in train_loader:
-            p_score, n_score, _, _ = compute_batch(batch, model, device)
+            p_score, n_score, _, _ = compute_batch(batch)
 
             loss, _, _ = loss_fn(p_score, n_score)
 
@@ -115,13 +147,13 @@ def train(model, optimizer, loss_fn, scheduler):
 
         train_loss = total_loss / len(train_loader)
 
-        # ================= TRAIN EVAL =================
+        # ---- EVALUATE TRAIN ----
         model.eval()
         train_pred, train_gt = [], []
 
         with torch.no_grad():
             for batch in train_loader:
-                _, _, probas, labels = compute_batch(batch, model, device)
+                _, _, probas, labels = compute_batch(batch)
                 train_pred.append(probas)
                 train_gt.append(labels)
 
@@ -130,36 +162,33 @@ def train(model, optimizer, loss_fn, scheduler):
 
         train_acc, train_auc, train_auprc, train_f1 = compute_metrics(train_pred, train_gt)
 
-        # ================= VALIDATION =================
+        # ---- VALIDATION ----
         val_pred, val_gt = [], []
         val_loss = 0
 
         with torch.no_grad():
             for batch in val_loader:
-                p_score, n_score, probas, labels = compute_batch(batch, model, device)
+                p_score, n_score, probas, labels = compute_batch(batch)
                 loss, _, _ = loss_fn(p_score, n_score)
 
                 val_loss += loss.item()
                 val_pred.append(probas)
                 val_gt.append(labels)
 
-        val_loss = val_loss / len(val_loader)
+        val_loss /= len(val_loader)
 
         val_pred = np.concatenate(val_pred)
         val_gt = np.concatenate(val_gt)
 
         val_acc, val_auc, val_auprc, val_f1 = compute_metrics(val_pred, val_gt)
 
-        # ================= SAVE BEST =================
         if val_auc > best_val_auc:
             best_val_auc = val_auc
             torch.save(model.state_dict(), "best_model.pth")
 
         scheduler.step()
 
-        # ================= PRINT =================
         print(f"\nEpoch {epoch:03d} | Time: {time.time() - start:.2f}s")
-
         print(f"Train -> Loss: {train_loss:.4f} | "
               f"Acc: {train_acc:.4f} | "
               f"ROC-AUC: {train_auc:.4f} | "
@@ -172,19 +201,19 @@ def train(model, optimizer, loss_fn, scheduler):
               f"AUPRC: {val_auprc:.4f} | "
               f"F1: {val_f1:.4f}")
 
-    print("\nBest Validation ROC-AUC:", round(best_val_auc, 4))
+    print("\nBest Val AUC:", best_val_auc)
 
 
-# ===================== TEST FUNCTION =====================
-def test(model):
-    print("\n================ TEST RESULTS ================")
+# ===================== TEST =====================
+def test():
+    print("\n===== TEST RESULTS (S2 SETTING) =====")
 
     model.eval()
     test_pred, test_gt = [], []
 
     with torch.no_grad():
         for batch in test_loader:
-            _, _, probas, labels = compute_batch(batch, model, device)
+            _, _, probas, labels = compute_batch(batch)
             test_pred.append(probas)
             test_gt.append(labels)
 
@@ -199,7 +228,7 @@ def test(model):
     print("Test F1-score :", round(f1, 4))
 
 
-# ===================== MAIN =====================
+# ===================== MODEL =====================
 model = models.MASMDDI(
     args.n_atom_feats,
     args.n_atom_hid,
@@ -211,7 +240,9 @@ loss_fn = custom_loss.SigmoidLoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda e: 0.96 ** e)
 
-train(model, optimizer, loss_fn, scheduler)
+
+# ===================== RUN =====================
+train()
 
 model.load_state_dict(torch.load("best_model.pth"))
-test(model)
+test()
