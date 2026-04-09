@@ -105,6 +105,7 @@ class MASMG(nn.Module):
 
         for conv in self.convs:
             x = F.relu(conv(x, edge_index))
+            x = F.dropout(x, p=0.2, training=self.training)
 
         spatial_feat = global_add_pool(x, batch)
         spectral_feat = self.spectral(x, batch)
