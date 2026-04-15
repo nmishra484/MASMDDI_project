@@ -5,52 +5,10 @@ from torch_geometric.nn import global_add_pool, TransformerConv
 
 
 # =====================================================
-# ----------------- NOVELTY MODULES -------------------
+# ----------------- CROSS DRUG ATTENTION --------------
 # =====================================================
 
-class RelationalHyperNet(nn.Module):
-    def __init__(self, n_features, n_rels):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Embedding(n_rels, n_features),
-            nn.Linear(n_features, n_features),
-            nn.LeakyReLU(0.2),
-            nn.Linear(n_features, n_features),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x, rel_idx):
-        gate = self.net(rel_idx)
-        return x * gate
-
-
-class SpectralGlobalFilter(nn.Module):
-    def __init__(self, n_features):
-        super().__init__()
-        self.filter = nn.Parameter(torch.ones(n_features))
-        self.lin = nn.Linear(n_features, n_features)
-
-    def forward(self, x, batch):
-        g_context = global_add_pool(x, batch)
-        spectral_x = g_context * self.filter
-        return torch.tanh(self.lin(spectral_x))
-
-
-class CrossModalityGate(nn.Module):
-    def __init__(self, n_features):
-        super().__init__()
-        self.gate = nn.Sequential(
-            nn.Linear(n_features * 2, 1),
-            nn.Sigmoid()
-        )
-
-    def forward(self, spatial_feat, spectral_feat):
-        combined = torch.cat([spatial_feat, spectral_feat], dim=-1)
-        g = self.gate(combined)
-        return g * spatial_feat + (1 - g) * spectral_feat
-
-
-class MultiHeadMolecularAttention(nn.Module):
+class CrossDrugAttention(nn.Module):
     def __init__(self, n_features):
         super().__init__()
         self.w_q = nn.Linear(n_features, n_features)
@@ -59,13 +17,21 @@ class MultiHeadMolecularAttention(nn.Module):
     def forward(self, h1, h2):
         q = self.w_q(h1)
         k = self.w_k(h2)
-        return torch.tanh(q + k)
 
+        # Improved interaction (element-wise)
+        interaction = torch.tanh(q * k)
+        return interaction
+
+
+# =====================================================
+# ------------- GEOMETRY WARP SCORING ------------------
+# =====================================================
 
 class RelationalGeometryWarp(nn.Module):
     def __init__(self, n_rels, n_features):
         super().__init__()
         self.n_features = n_features
+
         self.rel_emb = nn.Embedding(n_rels, n_features * n_features)
         nn.init.xavier_uniform_(self.rel_emb.weight)
 
@@ -81,7 +47,7 @@ class RelationalGeometryWarp(nn.Module):
 
 
 # =====================================================
-# ------------------ GRAPH ENCODER --------------------
+# ------------------ GRAPH ENCODER ---------------------
 # =====================================================
 
 class MASMG(nn.Module):
@@ -95,28 +61,26 @@ class MASMG(nn.Module):
             for _ in range(num_layers)
         ])
 
-        self.spectral = SpectralGlobalFilter(hidden_dim)
-        self.fusion = CrossModalityGate(hidden_dim)
-
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
 
+        # Initial projection
         x = self.lin0(x)
+        x = F.dropout(x, p=0.2, training=self.training)
 
+        # Transformer layers
         for conv in self.convs:
             x = F.relu(conv(x, edge_index))
             x = F.dropout(x, p=0.2, training=self.training)
 
-        spatial_feat = global_add_pool(x, batch)
-        spectral_feat = self.spectral(x, batch)
-
-        graph_feat = self.fusion(spatial_feat, spectral_feat)
+        # Graph-level embedding
+        graph_feat = global_add_pool(x, batch)
 
         return graph_feat
 
 
 # =====================================================
-# -------------------- MAIN MODEL ---------------------
+# -------------------- MAIN MODEL ----------------------
 # =====================================================
 
 class MASMDDI(nn.Module):
@@ -125,23 +89,24 @@ class MASMDDI(nn.Module):
 
         self.encoder = MASMG(in_features, hidden_dim, num_layers)
 
-        self.cross_attention = MultiHeadMolecularAttention(hidden_dim)
-        self.hypernet = RelationalHyperNet(hidden_dim, rel_total)
+        self.cross_attention = CrossDrugAttention(hidden_dim)
         self.scorer = RelationalGeometryWarp(rel_total, hidden_dim)
 
     def forward(self, triples):
         HData, TData, Rels = triples
 
+        # Encode both drugs
         h_embed = self.encoder(HData)
         t_embed = self.encoder(TData)
 
+        # Cross-drug interaction
         interaction_feat = self.cross_attention(h_embed, t_embed)
 
-        h_embed = self.hypernet(h_embed, Rels)
-        t_embed = self.hypernet(t_embed, Rels)
-
-        scores = self.scorer(h_embed + interaction_feat,
-                             t_embed + interaction_feat,
-                             Rels)
+        # Geometry-aware scoring
+        scores = self.scorer(
+            h_embed + interaction_feat,
+            t_embed + interaction_feat,
+            Rels
+        )
 
         return scores.squeeze()
