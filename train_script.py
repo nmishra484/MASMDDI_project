@@ -98,7 +98,7 @@ def train(model, train_loader, val_loader, device):
         train_pred = np.concatenate(train_pred)
         train_gt = np.concatenate(train_gt)
 
-        _, train_auc, _, _ = compute_metrics(train_pred, train_gt)
+        train_acc, train_auc, train_auprc, train_f1 = compute_metrics(train_pred, train_gt)
 
         # -------- VALIDATION --------
         model.eval()
@@ -113,13 +113,15 @@ def train(model, train_loader, val_loader, device):
         val_pred = np.concatenate(val_pred)
         val_gt = np.concatenate(val_gt)
 
-        _, val_auc, _, _ = compute_metrics(val_pred, val_gt)
+        val_acc, val_auc, val_auprc, val_f1 = compute_metrics(val_pred, val_gt)
 
         if val_auc > best_auc:
             best_auc = val_auc
             torch.save(model.state_dict(), "best_model.pth")
 
-        print(f"Epoch {epoch} | Train AUC: {train_auc:.4f} | Val AUC: {val_auc:.4f}")
+        print(f"\nEpoch {epoch}")
+        print(f"Train -> Acc: {train_acc:.4f} | AUC: {train_auc:.4f} | AUPRC: {train_auprc:.4f} | F1: {train_f1:.4f}")
+        print(f"Val   -> Acc: {val_acc:.4f} | AUC: {val_auc:.4f} | AUPRC: {val_auprc:.4f} | F1: {val_f1:.4f}")
 
     print("Best Val AUC:", best_auc)
 
