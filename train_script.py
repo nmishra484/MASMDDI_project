@@ -1,4 +1,5 @@
 import random
+import argparse
 import numpy as np
 import pandas as pd
 import torch
@@ -8,6 +9,11 @@ from sklearn import metrics
 
 import models
 from data_preprocessing import DrugDataset, DrugDataLoader, TOTAL_ATOM_FEATS
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--n_epochs', type=int, default=100)
+args = parser.parse_args()
+
 
 
 # ---------------- SPLIT ----------------
@@ -73,7 +79,7 @@ def compute_batch(batch, model, device):
 
 
 # ---------------- TRAIN ----------------
-def train(model, train_loader, val_loader, device):
+def train(model, train_loader, val_loader, device, n_epochs):
     optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=5e-4)
 
     best_auc = 0
@@ -172,7 +178,7 @@ if __name__ == "__main__":
     model = models.MASMDDI(TOTAL_ATOM_FEATS, 256, 86).to(device)
 
     print("Training started...")
-    train(model, train_loader, val_loader, device)
+    train(model, train_loader, val_loader, device, args.n_epochs)
 
     model.load_state_dict(torch.load("best_model.pth"))
 
