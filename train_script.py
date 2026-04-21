@@ -78,7 +78,7 @@ def train(model, train_loader, val_loader, device):
 
     best_auc = 0
 
-    for epoch in range(1, args.n_epochs + 1):
+    for epoch in range(1, n_epochs + 1):
         model.train()
         train_pred, train_gt = [], []
 
