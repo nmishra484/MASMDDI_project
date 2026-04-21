@@ -4,109 +4,78 @@ import torch.nn.functional as F
 from torch_geometric.nn import global_add_pool, TransformerConv
 
 
-# =====================================================
-# ----------------- CROSS DRUG ATTENTION --------------
-# =====================================================
-
+# ---------------- CROSS-DRUG ATTENTION ----------------
 class CrossDrugAttention(nn.Module):
-    def __init__(self, n_features):
+    def __init__(self, dim):
         super().__init__()
-        self.w_q = nn.Linear(n_features, n_features)
-        self.w_k = nn.Linear(n_features, n_features)
+        self.w_q = nn.Linear(dim, dim)
+        self.w_k = nn.Linear(dim, dim)
 
     def forward(self, h1, h2):
         q = self.w_q(h1)
         k = self.w_k(h2)
-
-        # Improved interaction (element-wise)
-        interaction = torch.tanh(q * k)
-        return interaction
+        return torch.tanh(q * k)
 
 
-# =====================================================
-# ------------- GEOMETRY WARP SCORING ------------------
-# =====================================================
-
+# ---------------- GEOMETRY WARP ----------------
 class RelationalGeometryWarp(nn.Module):
-    def __init__(self, n_rels, n_features):
+    def __init__(self, n_rels, dim):
         super().__init__()
-        self.n_features = n_features
+        self.dim = dim
+        self.rel = nn.Embedding(n_rels, dim * dim)
+        nn.init.xavier_uniform_(self.rel.weight)
 
-        self.rel_emb = nn.Embedding(n_rels, n_features * n_features)
-        nn.init.xavier_uniform_(self.rel_emb.weight)
+    def forward(self, h, t, r):
+        R = self.rel(r).view(-1, self.dim, self.dim)
+        R = F.normalize(R, dim=-1)
 
-    def forward(self, heads, tails, rels):
-        rel_mat = self.rel_emb(rels).view(-1, self.n_features, self.n_features)
-        rel_mat = F.normalize(rel_mat, dim=-1)
+        h = F.normalize(h, dim=-1).unsqueeze(1)
+        t = F.normalize(t, dim=-1).unsqueeze(-1)
 
-        h = F.normalize(heads, dim=-1).unsqueeze(1)
-        t = F.normalize(tails, dim=-1).unsqueeze(-1)
-
-        score = torch.matmul(torch.matmul(h, rel_mat), t)
+        score = torch.matmul(torch.matmul(h, R), t)
         return score.squeeze()
 
 
-# =====================================================
-# ------------------ GRAPH ENCODER ---------------------
-# =====================================================
-
-class MASMG(nn.Module):
-    def __init__(self, in_features, hidden_dim, num_layers):
+# ---------------- GRAPH ENCODER ----------------
+class Encoder(nn.Module):
+    def __init__(self, in_dim, hid_dim, layers=3):
         super().__init__()
 
-        self.lin0 = nn.Linear(in_features, hidden_dim)
+        self.lin = nn.Linear(in_dim, hid_dim)
 
         self.convs = nn.ModuleList([
-            TransformerConv(hidden_dim, hidden_dim, heads=4, concat=False)
-            for _ in range(num_layers)
+            TransformerConv(hid_dim, hid_dim, heads=4, concat=False)
+            for _ in range(layers)
         ])
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
 
-        # Initial projection
-        x = self.lin0(x)
-        x = F.dropout(x, p=0.2, training=self.training)
+        x = self.lin(x)
+        x = F.dropout(x, 0.3, training=self.training)
 
-        # Transformer layers
         for conv in self.convs:
             x = F.relu(conv(x, edge_index))
-            x = F.dropout(x, p=0.2, training=self.training)
+            x = F.dropout(x, 0.3, training=self.training)
 
-        # Graph-level embedding
-        graph_feat = global_add_pool(x, batch)
-
-        return graph_feat
+        return global_add_pool(x, batch)
 
 
-# =====================================================
-# -------------------- MAIN MODEL ----------------------
-# =====================================================
-
+# ---------------- MAIN MODEL ----------------
 class MASMDDI(nn.Module):
-    def __init__(self, in_features, hidden_dim, rel_total, num_layers):
+    def __init__(self, in_dim, hid_dim, rel_total):
         super().__init__()
 
-        self.encoder = MASMG(in_features, hidden_dim, num_layers)
-
-        self.cross_attention = CrossDrugAttention(hidden_dim)
-        self.scorer = RelationalGeometryWarp(rel_total, hidden_dim)
+        self.encoder = Encoder(in_dim, hid_dim)
+        self.attn = CrossDrugAttention(hid_dim)
+        self.scorer = RelationalGeometryWarp(rel_total, hid_dim)
 
     def forward(self, triples):
-        HData, TData, Rels = triples
+        H, T, R = triples
 
-        # Encode both drugs
-        h_embed = self.encoder(HData)
-        t_embed = self.encoder(TData)
+        h = self.encoder(H)
+        t = self.encoder(T)
 
-        # Cross-drug interaction
-        interaction_feat = self.cross_attention(h_embed, t_embed)
+        interaction = self.attn(h, t)
 
-        # Geometry-aware scoring
-        scores = self.scorer(
-            h_embed + interaction_feat,
-            t_embed + interaction_feat,
-            Rels
-        )
-
-        return scores.squeeze()
+        return self.scorer(h + interaction, t + interaction, R)
