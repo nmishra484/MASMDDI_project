@@ -1,5 +1,5 @@
-import random
 import argparse
+import random
 import numpy as np
 import pandas as pd
 import torch
@@ -10,13 +10,14 @@ from sklearn import metrics
 import models
 from data_preprocessing import DrugDataset, DrugDataLoader, TOTAL_ATOM_FEATS
 
+
+# ================= ARGUMENTS =================
 parser = argparse.ArgumentParser()
-parser.add_argument('--n_epochs', type=int, default=100)
+parser.add_argument('--n_epochs', type=int, default=30)
 args = parser.parse_args()
 
 
-
-# ---------------- SPLIT ----------------
+# ================= SPLIT =================
 def create_split(df, ratio=0.2):
     drugs = list(set(df['d1']).union(set(df['d2'])))
     random.shuffle(drugs)
@@ -50,7 +51,7 @@ def split_train_val(data, val_ratio=0.1):
     return data[:split], data[split:]
 
 
-# ---------------- METRICS ----------------
+# ================= METRICS =================
 def compute_metrics(pred, gt):
     pred_bin = (pred >= 0.5).astype(int)
 
@@ -62,7 +63,7 @@ def compute_metrics(pred, gt):
     return acc, auc, auprc, f1
 
 
-# ---------------- BATCH ----------------
+# ================= BATCH =================
 def compute_batch(batch, model, device):
     pos, neg = batch
 
@@ -78,15 +79,18 @@ def compute_batch(batch, model, device):
     return p_score, n_score, prob, gt
 
 
-# ---------------- TRAIN ----------------
+# ================= TRAIN =================
 def train(model, train_loader, val_loader, device, n_epochs):
     optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=5e-4)
 
     best_auc = 0
 
     for epoch in range(1, n_epochs + 1):
+
+        # -------- TRAIN --------
         model.train()
         train_pred, train_gt = [], []
+        train_loss = 0
 
         for batch in train_loader:
             p_score, n_score, prob, gt = compute_batch(batch, model, device)
@@ -98,8 +102,11 @@ def train(model, train_loader, val_loader, device, n_epochs):
             loss.backward()
             optimizer.step()
 
+            train_loss += loss.item()
             train_pred.append(prob)
             train_gt.append(gt)
+
+        train_loss /= len(train_loader)
 
         train_pred = np.concatenate(train_pred)
         train_gt = np.concatenate(train_gt)
@@ -109,30 +116,40 @@ def train(model, train_loader, val_loader, device, n_epochs):
         # -------- VALIDATION --------
         model.eval()
         val_pred, val_gt = [], []
+        val_loss = 0
 
         with torch.no_grad():
             for batch in val_loader:
-                _, _, prob, gt = compute_batch(batch, model, device)
+                p_score, n_score, prob, gt = compute_batch(batch, model, device)
+
+                loss = -(torch.log(torch.sigmoid(p_score)).mean() +
+                         torch.log(1 - torch.sigmoid(n_score)).mean())
+
+                val_loss += loss.item()
                 val_pred.append(prob)
                 val_gt.append(gt)
+
+        val_loss /= len(val_loader)
 
         val_pred = np.concatenate(val_pred)
         val_gt = np.concatenate(val_gt)
 
         val_acc, val_auc, val_auprc, val_f1 = compute_metrics(val_pred, val_gt)
 
+        # Save best model
         if val_auc > best_auc:
             best_auc = val_auc
             torch.save(model.state_dict(), "best_model.pth")
 
+        # -------- PRINT --------
         print(f"\nEpoch {epoch}")
-        print(f"Train -> Acc: {train_acc:.4f} | AUC: {train_auc:.4f} | AUPRC: {train_auprc:.4f} | F1: {train_f1:.4f}")
-        print(f"Val   -> Acc: {val_acc:.4f} | AUC: {val_auc:.4f} | AUPRC: {val_auprc:.4f} | F1: {val_f1:.4f}")
+        print(f"Train -> Loss: {train_loss:.4f} | Acc: {train_acc:.4f} | AUC: {train_auc:.4f} | AUPRC: {train_auprc:.4f} | F1: {train_f1:.4f}")
+        print(f"Val   -> Loss: {val_loss:.4f} | Acc: {val_acc:.4f} | AUC: {val_auc:.4f} | AUPRC: {val_auprc:.4f} | F1: {val_f1:.4f}")
 
-    print("Best Val AUC:", best_auc)
+    print("\nBest Val AUC:", round(best_auc, 4))
 
 
-# ---------------- TEST ----------------
+# ================= TEST =================
 def test(model, loader, device, name):
     model.eval()
     pred, gt = [], []
@@ -148,14 +165,14 @@ def test(model, loader, device, name):
 
     acc, auc, auprc, f1 = compute_metrics(pred, gt)
 
-    print(f"\n{name}")
-    print("Acc:", round(acc,4))
-    print("AUC:", round(auc,4))
-    print("AUPRC:", round(auprc,4))
-    print("F1:", round(f1,4))
+    print(f"\n===== {name} =====")
+    print("Accuracy :", round(acc, 4))
+    print("ROC-AUC  :", round(auc, 4))
+    print("AUPRC    :", round(auprc, 4))
+    print("F1-score :", round(f1, 4))
 
 
-# ---------------- MAIN ----------------
+# ================= MAIN =================
 if __name__ == "__main__":
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -177,7 +194,7 @@ if __name__ == "__main__":
 
     model = models.MASMDDI(TOTAL_ATOM_FEATS, 256, 86).to(device)
 
-    print("Training started...")
+    print("\n🚀 Training started...")
     train(model, train_loader, val_loader, device, args.n_epochs)
 
     model.load_state_dict(torch.load("best_model.pth"))
