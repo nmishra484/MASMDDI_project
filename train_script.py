@@ -52,8 +52,9 @@ def split_train_val(data, val_ratio=0.1):
 
 
 # ================= METRICS =================
-def compute_metrics(pred, gt):
-    pred_bin = (pred >= 0.5).astype(int)
+def compute_metrics(pred, gt, threshold=0.45):
+
+    pred_bin = (pred >= threshold).astype(int)
 
     acc = metrics.accuracy_score(gt, pred_bin)
     auc = metrics.roc_auc_score(gt, pred)
