@@ -328,6 +328,11 @@ def test(
 # TRAIN
 # =====================================================
 
+
+# =====================================================
+# TRAIN
+# =====================================================
+
 def train(
     model,
     train_loader,
@@ -335,9 +340,15 @@ def train(
     device
 ):
 
-    criterion=SigmoidLoss(
-        lambda_contrastive=args.lambda_contrastive
-    )
+    # ==========================================
+    # LOSS
+    # ==========================================
+
+    criterion=SigmoidLoss()
+
+    # ==========================================
+    # OPTIMIZER
+    # ==========================================
 
     optimizer=optim.Adam(
         model.parameters(),
@@ -346,7 +357,6 @@ def train(
     )
 
     best_auc=0
-
 
     for epoch in range(
         1,
@@ -362,8 +372,8 @@ def train(
         train_loss=0
 
         train_pred=[]
-        train_gt=[]
 
+        train_gt=[]
 
         for batch in train_loader:
 
@@ -373,11 +383,13 @@ def train(
                 device
             )
 
+            # =====================================
+            # CORRECT LOSS CALL
+            # =====================================
+
             total_loss,_,_=criterion(
                 p_score,
-                n_score,
-                z_h,
-                z_t
+                n_score
             )
 
             optimizer.zero_grad()
@@ -392,7 +404,6 @@ def train(
 
             train_gt.append(g)
 
-
         train_pred=np.concatenate(
             train_pred
         )
@@ -406,7 +417,6 @@ def train(
             train_gt
         )
 
-
         # =========================
         # VALIDATION
         # =========================
@@ -416,8 +426,8 @@ def train(
         val_loss=0
 
         val_pred=[]
-        val_gt=[]
 
+        val_gt=[]
 
         with torch.no_grad():
 
@@ -429,11 +439,13 @@ def train(
                     device
                 )
 
+                # =====================================
+                # CORRECT LOSS CALL
+                # =====================================
+
                 total_loss,_,_=criterion(
                     p_score,
-                    n_score,
-                    z_h,
-                    z_t
+                    n_score
                 )
 
                 val_loss += total_loss.item()
@@ -441,7 +453,6 @@ def train(
                 val_pred.append(prob)
 
                 val_gt.append(g)
-
 
         val_pred=np.concatenate(
             val_pred
@@ -455,7 +466,6 @@ def train(
             val_pred,
             val_gt
         )
-
 
         # =========================
         # PRINT RESULTS
@@ -483,7 +493,6 @@ def train(
             f"F1: {val_f1:.4f}"
         )
 
-
         # =========================
         # SAVE BEST MODEL
         # =========================
@@ -497,12 +506,10 @@ def train(
                 "best_model.pth"
             )
 
-
     print(
         "\nBest Validation AUC:",
         round(best_auc,4)
     )
-    # =========================
 
 
 
