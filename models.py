@@ -300,4 +300,3 @@ class MASMDDI(nn.Module):
         )
 
         return score, z_h, z_t
-
